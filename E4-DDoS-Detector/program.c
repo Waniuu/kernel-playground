@@ -1,5 +1,3 @@
-//go:build ignore
-
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -7,13 +5,16 @@
 #include <linux/ip.h>
 #include <linux/in.h>
 
-// Create an LRU_HASH map according to the project requirements.
-// The key is the source IP address (32-bit), the value is the packet count (64-bit).
+struct packet_stats {
+    __u64 count;
+    __u64 window_start_ns;
+};
+
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, __u32);
-    __type(value, __u64);
+    __type(value, struct packet_stats);
 } ip_counters SEC(".maps");
 
 SEC("xdp")
@@ -21,35 +22,36 @@ int detect_flood(struct xdp_md *ctx) {
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
 
-    // Verify the Ethernet header
     struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return XDP_PASS;
+    if ((void *)(eth + 1) > data_end) return XDP_PASS;
+    if (eth->h_proto != bpf_htons(ETH_P_IP)) return XDP_PASS;
 
-    // We are only interested in IPv4 packets
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-        return XDP_PASS;
-
-    // Parse the IP header
     struct iphdr *ip = (void *)(eth + 1);
-    if ((void *)(ip + 1) > data_end)
-        return XDP_PASS;
+    if ((void *)(ip + 1) > data_end) return XDP_PASS;
 
     __u32 saddr = ip->saddr;
-
-    // Lookup the source IP address in the map
-    __u64 *count = bpf_map_lookup_elem(&ip_counters, &saddr);
+    __u64 now = bpf_ktime_get_ns();
     
-    if (count) {
-        // If the IP is already in the map, safely increment the counter
-        __sync_fetch_and_add(count, 1);
+    struct packet_stats *stats = bpf_map_lookup_elem(&ip_counters, &saddr);
+    
+    if (stats) {
+        __u64 delta = now - stats->window_start_ns;
+        if (delta >= 1000000000ULL) {
+            if (stats->count >= 100) {
+                bpf_printk("[ALARM] DDoS detected! Packets in last sec: %llu\n", stats->count);
+            }
+            stats->count = 1;
+            stats->window_start_ns = now;
+        } else {
+            stats->count += 1;
+        }
     } else {
-        // If this is the first packet from this IP, initialize the counter to 1
-        __u64 init_val = 1;
-        bpf_map_update_elem(&ip_counters, &saddr, &init_val, BPF_ANY);
+        // SYGNAŁ ŻYCIA - ten tekst pojawi się przy pierwszym pingu!
+        bpf_printk("--- eBPF DETECTOR START! Pierwszy pakiet zlapany! ---\n");
+        struct packet_stats new_stats = {1, now};
+        bpf_map_update_elem(&ip_counters, &saddr, &new_stats, BPF_ANY);
     }
 
-    // As per the Basic level requirements, we do not drop traffic yet, just pass it
     return XDP_PASS;
 }
 

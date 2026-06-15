@@ -1,6 +1,3 @@
-# compiled program go
-ddos_detector
-
-# generated files bpf2go (artefacts)
-bpf_bpfel.*
-bpf_bpfeb.*
+# compiled object eBPF
+*.o
+*.ll
