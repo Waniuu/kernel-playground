@@ -4,3 +4,6 @@ src/c/.output/*
 /.idea
 **/*.swp
 **/tags
+
+# Ignore sentinel file created by setup-all.sh
+tests/.vm_initialized
